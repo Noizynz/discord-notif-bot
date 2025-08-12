@@ -1,0 +1,109 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+import json
+import os
+
+DATA_FILE = "home.bot.json"
+
+# اگه فایل دیتا وجود نداشت، بسازش
+if not os.path.exists(DATA_FILE):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump({"panels": {}}, f, ensure_ascii=False, indent=2)
+
+def save_data(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_data():
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+@bot.event
+async def on_ready():
+    print(f"✅ وارد شدم به اکانت: {bot.user}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"🔄 {len(synced)} دستور اسلش همگام شد.")
+    except Exception as e:
+        print(e)
+
+# /help
+@bot.tree.command(name="help", description="راهنمای استفاده از بات")
+async def help_command(interaction: discord.Interaction):
+    embed = discord.Embed(title="📚 راهنمای دستورات", color=discord.Color.blue())
+    embed.add_field(name="/panel", value="مدیریت پنل‌های ساخته‌شده", inline=False)
+    embed.add_field(name="/newpanel", value="ساخت پنل جدید برای دریافت نوتیف", inline=False)
+    embed.add_field(name="/check", value="ارسال پیام تست از یک پنل", inline=False)
+    embed.add_field(name="/help", value="نمایش این راهنما", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# /newpanel
+@bot.tree.command(name="newpanel", description="ساخت پنل جدید")
+async def newpanel(interaction: discord.Interaction, name: str, service: str, link: str, webhook_json: str, channel: discord.TextChannel):
+    data = load_data()
+    guild_id = str(interaction.guild_id)
+    if guild_id not in data["panels"]:
+        data["panels"][guild_id] = []
+
+    panel = {
+        "name": name,
+        "service": service,
+        "link": link,
+        "webhook_json": webhook_json,
+        "channel_id": channel.id
+    }
+    data["panels"][guild_id].append(panel)
+    save_data(data)
+
+    embed = discord.Embed(title="✅ پنل ساخته شد", color=discord.Color.green())
+    embed.add_field(name="نام پنل", value=name, inline=False)
+    embed.add_field(name="سرویس", value=service, inline=False)
+    embed.add_field(name="لینک", value=link, inline=False)
+    embed.add_field(name="چنل ارسال", value=channel.mention, inline=False)
+    await interaction.response.send_message(embed=embed)
+
+# /panel
+@bot.tree.command(name="panel", description="مدیریت پنل‌ها")
+async def panel(interaction: discord.Interaction):
+    data = load_data()
+    guild_id = str(interaction.guild_id)
+    if guild_id not in data["panels"] or len(data["panels"][guild_id]) == 0:
+        await interaction.response.send_message(embed=discord.Embed(description="❌ هیچ پنلی ساخته نشده.", color=discord.Color.red()))
+        return
+
+    embed = discord.Embed(title="📋 لیست پنل‌ها", color=discord.Color.blue())
+    for idx, panel in enumerate(data["panels"][guild_id], start=1):
+        embed.add_field(
+            name=f"{idx}. {panel['name']}",
+            value=f"سرویس: {panel['service']}\nلینک: {panel['link']}\nچنل: <#{panel['channel_id']}>",
+            inline=False
+        )
+    await interaction.response.send_message(embed=embed)
+
+# /check
+@bot.tree.command(name="check", description="تست یک پنل")
+async def check(interaction: discord.Interaction, panel_name: str):
+    data = load_data()
+    guild_id = str(interaction.guild_id)
+    if guild_id not in data["panels"]:
+        await interaction.response.send_message(embed=discord.Embed(description="❌ هیچ پنلی پیدا نشد.", color=discord.Color.red()))
+        return
+
+    for panel in data["panels"][guild_id]:
+        if panel["name"] == panel_name:
+            channel = bot.get_channel(panel["channel_id"])
+            if channel:
+                embed = discord.Embed(title="📢 پیام تست", description="این یک پیام تست است.", color=discord.Color.orange())
+                embed.add_field(name="سرویس", value=panel["service"], inline=False)
+                embed.add_field(name="لینک", value=panel["link"], inline=False)
+                await channel.send(embed=embed)
+                await interaction.response.send_message(embed=discord.Embed(description="✅ پیام تست ارسال شد.", color=discord.Color.green()))
+                return
+    await interaction.response.send_message(embed=discord.Embed(description="❌ پنل پیدا نشد.", color=discord.Color.red()))
+
+bot.run(os.getenv("DISCORD_TOKEN"))
