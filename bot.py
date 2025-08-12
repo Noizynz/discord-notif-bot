@@ -2,7 +2,6 @@
 import discord
 from discord.ext import commands, tasks
 import os, json, aiohttp, feedparser, asyncio
-from datetime import datetime
 
 DATA_FILE = "home.bot.json"
 
@@ -21,9 +20,11 @@ def save_data(data):
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="/", intents=intents)
+# پیش‌وند مورد نظر برای دستورات متنی (prefix)
+PREFIX = "hm!"
+bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
-# ----- توابع کمکی -----
+# --- توابع کمکی ---
 def make_embed(title="", description="", color=0x3498db):
     return discord.Embed(title=title, description=description, color=color)
 
@@ -50,58 +51,74 @@ def youtube_rss_from_channel_link(link_or_id: str):
         return f"https://www.youtube.com/feeds/videos.xml?channel_id={link_or_id}"
     return None
 
-# ----- رویدادها و دستورات -----
+# --- رویداد راه‌اندازی ---
 @bot.event
 async def on_ready():
     print("✅ بات آنلاین شد:", bot.user)
-    check_youtube.start()
+    # Register slash commands faster for one guild if provided
+    GUILD = os.getenv("GUILD_ID")
+    if GUILD:
+        try:
+            await bot.tree.sync(guild=discord.Object(id=int(GUILD)))
+            print("🔄 دستورات اسلش برای Guild همگام‌سازی شد.")
+        except Exception as e:
+            print("خطا در سینک گیلد:", e)
+    else:
+        try:
+            await bot.tree.sync()
+            print("🔄 دستورات اسلش (global) همگام‌سازی شد.")
+        except Exception as e:
+            print("خطا در سینک global:", e)
 
+    # start background task
+    if not check_youtube.is_running():
+        check_youtube.start()
+
+# ---------------- Slash commands (دستورات اسلش) ----------------
 @bot.tree.command(name="help", description="نمایش راهنمای بات")
-async def help_cmd(interaction: discord.Interaction):
-    embed = discord.Embed(title="📚 راهنمای بات نوتیف", color=discord.Color.blue())
-    embed.add_field(name="/newpanel", value="ساخت پنل جدید (مرحله‌به‌مرحله)", inline=False)
-    embed.add_field(name="/panel", value="نمایش همه پنل‌های ساخته‌شده", inline=False)
-    embed.add_field(name="/check", value="تست سریع یک پنل و فرستادن پیام تست", inline=False)
+async def slash_help(interaction: discord.Interaction):
+    embed = make_embed("📚 راهنمای بات", "دستورهای قابل استفاده:")
+    embed.add_field(name=f"{PREFIX}help  یا  /help", value="نمایش این راهنما", inline=False)
+    embed.add_field(name=f"{PREFIX}newpanel  یا  /newpanel", value="ساخت پنل جدید", inline=False)
+    embed.add_field(name=f"{PREFIX}panel  یا  /panel", value="نمایش پنل‌های ساخته‌شده", inline=False)
+    embed.add_field(name=f"{PREFIX}check <name>  یا  /check", value="ارسال پیام تست از یک پنل", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="newpanel", description="ساخت پنل جدید به صورت مرحله به مرحله")
-async def newpanel(interaction: discord.Interaction):
-    await interaction.response.send_message(embed=make_embed("📌 ساخت پنل جدید", "لطفاً یک نام ساده برای پنل وارد کنید (مثال: my-youtube)."), ephemeral=True)
+@bot.tree.command(name="newpanel", description="ساخت پنل جدید (مرحله‌به‌مرحله)")
+async def slash_newpanel(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=make_embed("📌 ساخت پنل جدید", "لطفاً یک نام ساده برای پنل وارد کنید."), ephemeral=True)
 
-    def check(m):
+    def check_msg(m):
         return m.author.id == interaction.user.id and m.channel.id == interaction.channel_id
 
     try:
-        msg = await bot.wait_for("message", check=check, timeout=120)
+        msg = await bot.wait_for("message", check=check_msg, timeout=120)
         panel_name = msg.content.strip()
 
-        await interaction.followup.send(embed=make_embed("🔧 سرویس را انتخاب کنید", "ارسال عدد:\n1️⃣ ویدیو یوتیوب\n2️⃣ استریم یوتیوب"), ephemeral=True)
-        msg2 = await bot.wait_for("message", check=check, timeout=120)
+        await interaction.followup.send(embed=make_embed("🔧 سرویس را انتخاب کنید", "ارسال عدد: 1) ویدیو یوتیوب  2) استریم یوتیوب"), ephemeral=True)
+        msg2 = await bot.wait_for("message", check=check_msg, timeout=120)
         choice = msg2.content.strip()
-
         if choice == "1":
             service = "youtube_video"
         elif choice == "2":
             service = "youtube_stream"
         else:
-            await interaction.followup.send(embed=make_embed("⚠️ سرویس نامعتبر", "لطفا 1 یا 2 را ارسال کنید."), ephemeral=True)
+            await interaction.followup.send(embed=make_embed("⚠️ سرویس نامعتبر","فقط 1 یا 2 پذیرفته می‌شود."), ephemeral=True)
             return
 
-        await interaction.followup.send(embed=make_embed("🔗 لینک کانال", "لطفاً لینک کانال یوتیوب (یا channel_id) را ارسال کنید.\nمثال: https://www.youtube.com/channel/UCxxxx"), ephemeral=True)
-        msg3 = await bot.wait_for("message", check=check, timeout=180)
+        await interaction.followup.send(embed=make_embed("🔗 لینک کانال", "لطفاً لینک کانال یوتیوب یا channel_id را ارسال کنید."), ephemeral=True)
+        msg3 = await bot.wait_for("message", check=check_msg, timeout=180)
         link = msg3.content.strip()
 
-        disco_text = ("🔔 حالا به سایت https://discohook.org برو و یک Embed بساز.\n"
-                      "از placeholderها استفاده کن:\n"
-                      "`<title>` → عنوان\n`<videourl>` → لینک\n`<thumbnail>` → عکس\n"
-                      "بعد از اتمام دکمه JSON را بزن و متن JSON را اینجا ارسال کن.")
-        await interaction.followup.send(embed=make_embed("📝 راهنمای Discohook", disco_text), ephemeral=True)
-
-        msg4 = await bot.wait_for("message", check=check, timeout=600)
+        disco_text = ("به سایت https://discohook.org برو و Embed بساز.\n"
+                      "Placeholderها:\n`<title>` عنوان\n`<videourl>` لینک\n`<thumbnail>` عکس\n"
+                      "پس از اتمام، دکمه JSON را زده و متن JSON را اینجا ارسال کن.")
+        await interaction.followup.send(embed=make_embed("📝 Discohook", disco_text), ephemeral=True)
+        msg4 = await bot.wait_for("message", check=check_msg, timeout=600)
         webhook_json_text = msg4.content.strip()
 
-        await interaction.followup.send(embed=make_embed("📢 حالا کانال دیسکورد را منشن یا نام آن را بفرستید (مثلاً #announcements)"), ephemeral=True)
-        msg5 = await bot.wait_for("message", check=check, timeout=120)
+        await interaction.followup.send(embed=make_embed("📢 حالا کانال دیسکورد را منشن یا نام آن را بفرستید"), ephemeral=True)
+        msg5 = await bot.wait_for("message", check=check_msg, timeout=120)
         if msg5.channel_mentions:
             channel_id = msg5.channel_mentions[0].id
         else:
@@ -111,10 +128,7 @@ async def newpanel(interaction: discord.Interaction):
                 if ch.name == chan_name and isinstance(ch, discord.TextChannel):
                     found = ch
                     break
-            if found:
-                channel_id = found.id
-            else:
-                channel_id = interaction.channel_id
+            channel_id = found.id if found else interaction.channel_id
 
         data = load_data()
         gid = str(interaction.guild_id)
@@ -129,61 +143,168 @@ async def newpanel(interaction: discord.Interaction):
             "last_seen": None
         })
         save_data(data)
-
-        await interaction.followup.send(embed=make_embed("✅ پنل ساخته شد", f"نام پنل: `{panel_name}`\nسرویس: `{service}`\nکانال ارسال: <#{channel_id}>"), ephemeral=True)
+        await interaction.followup.send(embed=make_embed("✅ پنل ساخته شد", f"پنل `{panel_name}` ساخته و ذخیره شد."), ephemeral=True)
     except asyncio.TimeoutError:
-        await interaction.followup.send(embed=make_embed("⏱️ زمان تمام شد", "فرآیند ساخت پنل منقضی شد. دوباره /newpanel را اجرا کن."), ephemeral=True)
+        await interaction.followup.send(embed=make_embed("⏱️ زمان تمام شد", "دوباره /newpanel را اجرا کنید."), ephemeral=True)
 
-@bot.tree.command(name="panel", description="نمایش پنل‌های ساخته شده در سرور")
-async def panel_list(interaction: discord.Interaction):
+@bot.tree.command(name="panel", description="نمایش پنل‌های ساخته شده")
+async def slash_panel(interaction: discord.Interaction):
     data = load_data()
     gid = str(interaction.guild_id)
-    if gid not in data["panels"] or len(data["panels"][gid]) == 0:
-        await interaction.response.send_message(embed=make_embed("📭 هیچ پنلی پیدا نشد", "برای ساخت پنل از /newpanel استفاده کنید."), ephemeral=True)
+    if gid not in data["panels"] or not data["panels"][gid]:
+        await interaction.response.send_message(embed=make_embed("📭 هیچ پنلی نیست","برای ساخت پنل /newpanel را بزنید."), ephemeral=True)
         return
-    emb = discord.Embed(title="📋 پنل‌های سرور", color=discord.Color.blue())
+    emb = make_embed("📋 پنل‌های سرور")
     for p in data["panels"][gid]:
         emb.add_field(name=p["name"], value=f"سرویس: `{p['service']}`\nلینک: {p['link']}\nچنل: <#{p['channel_id']}>", inline=False)
     await interaction.response.send_message(embed=emb, ephemeral=True)
 
 @bot.tree.command(name="deletepanel", description="حذف یک پنل با نام")
-async def delete_panel(interaction: discord.Interaction, name: str):
-    data = load_data()
-    gid = str(interaction.guild_id)
+async def slash_deletepanel(interaction: discord.Interaction, name: str):
+    data = load_data(); gid = str(interaction.guild_id)
     if gid not in data["panels"]:
-        await interaction.response.send_message(embed=make_embed("❌ خطا", "هیچ پنلی وجود ندارد."), ephemeral=True); return
+        await interaction.response.send_message(embed=make_embed("❌ خطا","هیچ پنلی وجود ندارد."), ephemeral=True); return
     before = len(data["panels"][gid])
     data["panels"][gid] = [p for p in data["panels"][gid] if p["name"] != name]
     save_data(data)
-    after = len(data["panels"][gid])
-    if before == after:
-        await interaction.response.send_message(embed=make_embed("❌ پیدا نشد", "پنل با این نام یافت نشد."), ephemeral=True)
+    if before == len(data["panels"][gid]):
+        await interaction.response.send_message(embed=make_embed("❌ پیدا نشد","پنل یافت نشد."), ephemeral=True)
     else:
         await interaction.response.send_message(embed=make_embed("✅ حذف شد", f"پنل `{name}` حذف شد."), ephemeral=True)
 
-@bot.tree.command(name="check", description="ارسال پیام تست با آخرین محتوای پنل")
-async def check_panel(interaction: discord.Interaction, name: str):
-    data = load_data()
-    gid = str(interaction.guild_id)
+@bot.tree.command(name="check", description="ارسال پیام تست از یک پنل")
+async def slash_check(interaction: discord.Interaction, name: str):
+    await interaction.response.defer(ephemeral=True)
+    await perform_check_and_send(interaction.guild, name, interaction_user=interaction.user, reply_target=interaction)
+
+# ---------------- Prefix commands (با پیش‌وند hm!) ----------------
+@bot.command(name="help")
+async def prefix_help(ctx: commands.Context):
+    embed = make_embed("📚 راهنمای بات", "دستورها:")
+    embed.add_field(name=f"{PREFIX}help  یا  /help", value="نمایش این راهنما", inline=False)
+    embed.add_field(name=f"{PREFIX}newpanel  یا  /newpanel", value="ساخت پنل جدید", inline=False)
+    embed.add_field(name=f"{PREFIX}panel  یا  /panel", value="نمایش پنل‌ها", inline=False)
+    embed.add_field(name=f"{PREFIX}check <name>  یا  /check", value="ارسال پیام تست از یک پنل", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command(name="newpanel")
+async def prefix_newpanel(ctx: commands.Context):
+    await ctx.send(embed=make_embed("📌 ساخت پنل جدید", "لطفاً یک نام ساده برای پنل وارد کنید."))
+
+    def check(m):
+        return m.author.id == ctx.author.id and m.channel.id == ctx.channel.id
+
+    try:
+        msg = await bot.wait_for("message", check=check, timeout=120)
+        panel_name = msg.content.strip()
+
+        await ctx.send(embed=make_embed("🔧 سرویس را انتخاب کنید", "ارسال عدد: 1) ویدیو یوتیوب  2) استریم یوتیوب"))
+        msg2 = await bot.wait_for("message", check=check, timeout=120)
+        choice = msg2.content.strip()
+        if choice == "1":
+            service = "youtube_video"
+        elif choice == "2":
+            service = "youtube_stream"
+        else:
+            await ctx.send(embed=make_embed("⚠️ سرویس نامعتبر","فقط 1 یا 2 پذیرفته می‌شود.")); return
+
+        await ctx.send(embed=make_embed("🔗 لینک کانال", "لطفاً لینک کانال یوتیوب یا channel_id را ارسال کنید."))
+        msg3 = await bot.wait_for("message", check=check, timeout=180)
+        link = msg3.content.strip()
+
+        disco_text = ("به سایت https://discohook.org برو و Embed بساز.\n"
+                      "Placeholderها: `<title>`, `<videourl>`, `<thumbnail>`\n"
+                      "بعد از اتمام JSON را اینجا ارسال کن.")
+        await ctx.send(embed=make_embed("📝 Discohook", disco_text))
+        msg4 = await bot.wait_for("message", check=check, timeout=600)
+        webhook_json_text = msg4.content.strip()
+
+        await ctx.send(embed=make_embed("📢 حالا کانال دیسکورد را منشن یا نام آن را بفرستید"))
+        msg5 = await bot.wait_for("message", check=check, timeout=120)
+        if msg5.channel_mentions:
+            channel_id = msg5.channel_mentions[0].id
+        else:
+            chan_name = msg5.content.strip().lstrip("#")
+            found = None
+            for ch in ctx.guild.channels:
+                if ch.name == chan_name and isinstance(ch, discord.TextChannel):
+                    found = ch; break
+            channel_id = found.id if found else ctx.channel.id
+
+        data = load_data(); gid = str(ctx.guild.id)
+        if gid not in data["panels"]: data["panels"][gid] = []
+        data["panels"][gid].append({
+            "name": panel_name, "service": service, "link": link,
+            "webhook_json": webhook_json_text, "channel_id": channel_id, "last_seen": None
+        })
+        save_data(data)
+        await ctx.send(embed=make_embed("✅ پنل ساخته شد", f"پنل `{panel_name}` ساخته شد."))
+    except asyncio.TimeoutError:
+        await ctx.send(embed=make_embed("⏱️ زمان تمام شد", "دوباره دستور را اجرا کن."))
+
+@bot.command(name="panel")
+async def prefix_panel(ctx: commands.Context):
+    data = load_data(); gid = str(ctx.guild.id)
+    if gid not in data["panels"] or not data["panels"][gid]:
+        await ctx.send(embed=make_embed("📭 هیچ پنلی نیست","برای ساخت پنل hm!newpanel را بزنید.")); return
+    emb = make_embed("📋 پنل‌های سرور")
+    for p in data["panels"][gid]:
+        emb.add_field(name=p["name"], value=f"سرویس: `{p['service']}`\nلینک: {p['link']}\nچنل: <#{p['channel_id']}>", inline=False)
+    await ctx.send(embed=emb)
+
+@bot.command(name="deletepanel")
+async def prefix_deletepanel(ctx: commands.Context, name: str):
+    data = load_data(); gid = str(ctx.guild.id)
     if gid not in data["panels"]:
-        await interaction.response.send_message(embed=make_embed("❌ هیچ پنلی پیدا نشد", ""), ephemeral=True); return
+        await ctx.send(embed=make_embed("❌ خطا","هیچ پنلی وجود ندارد.")); return
+    before = len(data["panels"][gid])
+    data["panels"][gid] = [p for p in data["panels"][gid] if p["name"] != name]
+    save_data(data)
+    if before == len(data["panels"][gid]):
+        await ctx.send(embed=make_embed("❌ پیدا نشد","پنل یافت نشد."))
+    else:
+        await ctx.send(embed=make_embed("✅ حذف شد", f"پنل `{name}` حذف شد."))
+
+@bot.command(name="check")
+async def prefix_check(ctx: commands.Context, name: str):
+    await perform_check_and_send(ctx.guild, name, ctx_user=ctx.author, reply_target=ctx)
+
+# --- وظیفهٔ مشترک برای /check و hm!check (ارسال پیام تست و پردازش قالب JSON) ---
+async def perform_check_and_send(guild_obj, panel_name, interaction_user=None, reply_target=None, ctx_user=None, reply_ctx=None):
+    data = load_data(); gid = str(guild_obj.id)
+    if gid not in data["panels"]:
+        if reply_target:
+            await reply_target.response.send_message(embed=make_embed("❌ هیچ پنلی نیست",""), ephemeral=True)
+        elif reply_ctx:
+            await reply_ctx.send(embed=make_embed("❌ هیچ پنلی نیست",""))
+        return
     panel = None
     for p in data["panels"][gid]:
-        if p["name"] == name:
-            panel = p
-            break
+        if p["name"] == panel_name:
+            panel = p; break
     if not panel:
-        await interaction.response.send_message(embed=make_embed("❌ پنل یافت نشد", ""), ephemeral=True); return
+        if reply_target:
+            await reply_target.response.send_message(embed=make_embed("❌ پنل یافت نشد",""), ephemeral=True)
+        elif reply_ctx:
+            await reply_ctx.send(embed=make_embed("❌ پنل یافت نشد",""))
+        return
 
+    # فعلاً فقط یوتیوب پیاده شده
     if panel["service"].startswith("youtube"):
         rss = youtube_rss_from_channel_link(panel["link"])
         if not rss:
-            await interaction.response.send_message(embed=make_embed("⚠️ نمی‌توان RSS ساخت", "لطفاً لینک کانال یوتیوب را به صورت `https://www.youtube.com/channel/UC...` وارد کنید."), ephemeral=True)
+            if reply_target:
+                await reply_target.response.send_message(embed=make_embed("⚠️ RSS ساخته نشد","لینک کانال را به فرم channel بفرست."), ephemeral=True)
+            elif reply_ctx:
+                await reply_ctx.send(embed=make_embed("⚠️ RSS ساخته نشد",""))
             return
         async with aiohttp.ClientSession() as session:
             parsed = await fetch_rss(session, rss)
             if not parsed or not parsed.entries:
-                await interaction.response.send_message(embed=make_embed("ℹ️ هیچ ویدیویی یافت نشد", ""), ephemeral=True)
+                if reply_target:
+                    await reply_target.response.send_message(embed=make_embed("ℹ️ ویدیویی نیست",""), ephemeral=True)
+                elif reply_ctx:
+                    await reply_ctx.send(embed=make_embed("ℹ️ ویدیویی نیست",""))
                 return
             latest = parsed.entries[0]
             video_id = latest.get("yt_videoid") or ""
@@ -194,18 +315,17 @@ async def check_panel(interaction: discord.Interaction, name: str):
                     thumbnail = latest.get("media_thumbnail")[0].get("url","")
                 except:
                     thumbnail = ""
-            mapping = {
-                "title": latest.get("title",""),
-                "videourl": video_url,
-                "thumbnail": thumbnail,
-                "channelname": parsed.feed.get("title","")
-            }
+            mapping = {"title": latest.get("title",""), "videourl": video_url, "thumbnail": thumbnail, "channelname": parsed.feed.get("title","")}
             try:
                 filled = replace_placeholders_in_json_string(panel["webhook_json"], mapping)
                 data_json = json.loads(filled)
                 ch = bot.get_channel(panel["channel_id"])
                 if not ch:
-                    await interaction.response.send_message(embed=make_embed("❌ کانال پیدا نشد", ""), ephemeral=True); return
+                    if reply_target:
+                        await reply_target.response.send_message(embed=make_embed("❌ کانال پیدا نشد",""), ephemeral=True)
+                    elif reply_ctx:
+                        await reply_ctx.send(embed=make_embed("❌ کانال پیدا نشد",""))
+                    return
                 if isinstance(data_json, dict) and data_json.get("embeds"):
                     for e in data_json["embeds"]:
                         try:
@@ -213,19 +333,32 @@ async def check_panel(interaction: discord.Interaction, name: str):
                             await ch.send(embed=emb)
                         except Exception as e:
                             print("embed send error:", e)
-                    await interaction.response.send_message(embed=make_embed("✅ پیام تست ارسال شد", f"به کانال {ch.mention} ارسال شد."), ephemeral=True)
+                    if reply_target:
+                        await reply_target.response.send_message(embed=make_embed("✅ پیام تست ارسال شد", f"در {ch.mention} ارسال شد."), ephemeral=True)
+                    elif reply_ctx:
+                        await reply_ctx.send(embed=make_embed("✅ پیام تست ارسال شد", f"در {ch.mention} ارسال شد."))
+                    # به‌روزرسانی last_seen انجام نخواهد شد برای تست
                     return
                 else:
                     await ch.send(f"🔔 تست: {mapping['title']} - {mapping['videourl']}")
-                    await interaction.response.send_message(embed=make_embed("✅ پیام تست ارسال شد", f"به کانال {ch.mention} ارسال شد."), ephemeral=True)
+                    if reply_target:
+                        await reply_target.response.send_message(embed=make_embed("✅ پیام تست ارسال شد", f"در {ch.mention} ارسال شد."), ephemeral=True)
+                    elif reply_ctx:
+                        await reply_ctx.send(embed=make_embed("✅ پیام تست ارسال شد", f"در {ch.mention} ارسال شد."))
                     return
             except Exception as e:
-                await interaction.response.send_message(embed=make_embed("❌ خطا در پردازش قالب JSON", str(e)), ephemeral=True)
+                if reply_target:
+                    await reply_target.response.send_message(embed=make_embed("❌ خطا در پردازش JSON", str(e)), ephemeral=True)
+                elif reply_ctx:
+                    await reply_ctx.send(embed=make_embed("❌ خطا در پردازش JSON", str(e)))
                 return
     else:
-        await interaction.response.send_message(embed=make_embed("ℹ️ سرویس هنوز پیاده نشده", "فعلاً فقط یوتیوب پشتیبانی می‌شود."), ephemeral=True)
+        if reply_target:
+            await reply_target.response.send_message(embed=make_embed("ℹ️ سرویس هنوز پیاده نشده","فعلاً فقط یوتیوب پشتیبانی می‌شود."), ephemeral=True)
+        elif reply_ctx:
+            await reply_ctx.send(embed=make_embed("ℹ️ سرویس هنوز پیاده نشده",""))
 
-# تسک چک یوتیوب هر 5 دقیقه
+# --- چک یوتیوب هر 5 دقیقه ---
 @tasks.loop(minutes=5)
 async def check_youtube():
     await bot.wait_until_ready()
@@ -254,13 +387,7 @@ async def check_youtube():
                         thumbnail = newest.get("media_thumbnail")[0].get("url","")
                     except:
                         thumbnail = ""
-                mapping = {
-                    "title": newest.get("title",""),
-                    "videourl": video_url,
-                    "thumbnail": thumbnail,
-                    "channelname": parsed.feed.get("title",""),
-                    "published": newest.get("published","")
-                }
+                mapping = {"title": newest.get("title",""), "videourl": video_url, "thumbnail": thumbnail, "channelname": parsed.feed.get("title",""), "published": newest.get("published","")}
                 try:
                     filled = replace_placeholders_in_json_string(panel["webhook_json"], mapping)
                     data_json = json.loads(filled)
@@ -279,6 +406,7 @@ async def check_youtube():
                 except Exception as e:
                     print("Error processing panel JSON:", e)
 
+# --- اجرای بات ---
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
     if not token:
